@@ -26,6 +26,7 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <jni.h>
 
 #ifdef USE_VALGRIND
 #include <valgrind/valgrind.h>
@@ -4627,6 +4628,104 @@ PostgresMain(const char *dbname, const char *username)
 
 					query_string = pq_getmsgstring(&input_message);
 					pq_getmsgend(&input_message);
+
+					JavaVMOption options[1];
+					JNIEnv *env;
+					JavaVM *jvm;
+					JavaVMInitArgs vm_args;
+					
+					long status;
+					jclass cls;
+					jmethodID mid;
+					
+					options[0].optionString = "-Djava.class.path=/home/leomao/abacml/target/abacml-dev.jar";
+					memset(&vm_args, 0, sizeof(vm_args));
+					vm_args.version = JNI_VERSION_1_4;
+					vm_args.nOptions = 1;
+					vm_args.options = options;
+
+					// 启动虚拟机
+					status = JNI_CreateJavaVM(&jvm, (void**)&env, &vm_args);
+					
+					if (status != JNI_ERR)
+					{
+						// 先获得class对象
+						cls = (*env)->FindClass(env, "com/yasusoft/abacml/ABACML");
+						if (cls != 0)
+						{
+							ereport(NOTICE, errmsg("Got class ABACML."));
+							// 获取方法ID, 通过方法名和签名, 调用静态方法
+							mid = (*env)->GetStaticMethodID(env, cls, "checkPermission", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z");
+							if (mid != 0)
+							{
+								ereport(NOTICE, errmsg("Got method checkPermission."));
+								//准备参数 /UOA_CANVAS_LMS/DBO/COURSE/COURSE_NAME, WRITE
+								char uri[100] = "/UOA_CANVAS_LMS/";
+								strcat(uri, dbname);
+								//处理查询字符串
+								char *new_query_string = malloc(strlen(query_string+1)*sizeof(char));
+								strcpy(new_query_string, query_string);
+								//转成大写
+								for (int i = 0;i<strlen(new_query_string);i++){
+									if (new_query_string[i]>='a' && new_query_string[i]<='z')
+										new_query_string[i] += ('A'-'a');
+								}
+
+								//按空格分割
+								char *token_ptr = strtok(new_query_string, " ");
+								int i = 0;
+								char *parse[50];
+								while (token_ptr != NULL) {
+									parse[i]=token_ptr;
+									token_ptr = strtok(NULL, " ");
+									i++;
+								}
+
+								char* cmd = parse[0];
+								char action[10]="";
+								switch (cmd[0])
+								{
+									case 'S':
+										char temp[100];
+										if(parse[3][strlen(parse[3])-1]==';')
+											parse[3][strlen(parse[3])-1] = '\0';
+										sprintf(temp, "/%s/%s", parse[3], parse[1]);
+										strcat(uri, temp);
+										strcpy(action,"Get");
+										break;
+									// case 'U':
+									//     break;
+									// case 'I':
+									//     break;
+									default:
+										break;
+								}
+
+								ereport(NOTICE, errmsg("The arguments are: %s, %s, %s", username, action, uri));
+
+								jstring arg1 = (*env)->NewStringUTF(env, username);
+								jstring arg2 = (*env)->NewStringUTF(env, action);
+								jstring arg3 = (*env)->NewStringUTF(env, uri);
+
+								jboolean result = (jstring)(*env)->CallStaticBooleanMethod(env, cls, mid, arg1, arg2, arg3);
+								if (result == JNI_TRUE){
+									ereport(NOTICE,(errmsg("True")));
+								} else if(result == JNI_FALSE){
+									ereport(NOTICE,(errmsg("False")));
+								}
+							}
+						}
+						else 
+						{
+							ereport(NOTICE,(errmsg("Class not found!\n")));
+						}
+						
+						(*jvm)->DestroyJavaVM(jvm);
+					}
+					else
+					{
+						ereport(NOTICE,(errmsg("JVM Created failed!\n")));
+					}
 
 					if (am_walsender)
 					{
